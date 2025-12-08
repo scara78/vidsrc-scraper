@@ -45,6 +45,7 @@ async function extractStreamAndSubs(url, opts = {}) {
   try {
     browser = await puppeteerExtra.launch({
       headless: true,
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
