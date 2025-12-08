@@ -59,10 +59,8 @@ async function extractStreamAndSubs(url, opts = {}) {
     });
 
     activeBrowsers.add(browser);
-
     page = await browser.newPage();
     
-    // Set shorter timeout for page operations
     page.setDefaultTimeout(30000);
     page.setDefaultNavigationTimeout(60000);
 
@@ -82,10 +80,15 @@ async function extractStreamAndSubs(url, opts = {}) {
     let foundStream = null;
     const streamSet = new Set();
     const subsMap = new Map();
+    
+    // ADD LOGGING
+    let responseCount = 0;
+    let requestCount = 0;
 
     const registerStream = (u) => {
       if (!u) return;
       if (!streamSet.has(u)) {
+        console.log(`[STREAM FOUND] ${u}`);
         streamSet.add(u);
         if (!foundStream) foundStream = u;
       }
@@ -94,6 +97,7 @@ async function extractStreamAndSubs(url, opts = {}) {
     const registerSub = (u, meta = {}) => {
       if (!u) return;
       if (!subsMap.has(u)) {
+        console.log(`[SUBTITLE FOUND] ${u} (${meta.source})`);
         subsMap.set(u, Object.assign({ 
           url: u, 
           label: meta.label || null, 
@@ -104,6 +108,7 @@ async function extractStreamAndSubs(url, opts = {}) {
     };
 
     page.on("response", async (res) => {
+      responseCount++;
       try {
         const rUrl = res.url();
         const headers = res.headers() || {};
@@ -132,11 +137,12 @@ async function extractStreamAndSubs(url, opts = {}) {
           }
         }
       } catch (e) {
-        // Silently handle response errors
+        console.error('[RESPONSE ERROR]', e.message);
       }
     });
 
     page.on("request", (req) => {
+      requestCount++;
       try {
         const rUrl = req.url();
         if (rUrl.match(/\.m3u8(\?|$)/i)) registerStream(rUrl);
@@ -144,18 +150,19 @@ async function extractStreamAndSubs(url, opts = {}) {
       } catch (e) {}
     });
 
-    // Navigate with error handling
+    console.log(`[NAVIGATING] ${url}`);
     await page.goto(url, { 
       waitUntil: "networkidle2", 
       timeout: 60000 
     }).catch(async (err) => {
-      // If navigation fails, try with domcontentloaded instead
-      console.log('Retry with domcontentloaded...');
+      console.log('[RETRY] Navigation failed, trying domcontentloaded...');
       await page.goto(url, { 
         waitUntil: "domcontentloaded", 
         timeout: 60000 
       });
     });
+
+    console.log(`[NAVIGATION COMPLETE] Responses: ${responseCount}, Requests: ${requestCount}`);
 
     const domScan = await page.evaluate(() => {
       const results = { tracks: [], htmlSubs: [], sources: [], playerCandidates: [] };
@@ -186,6 +193,8 @@ async function extractStreamAndSubs(url, opts = {}) {
       return results;
     });
 
+    console.log(`[DOM SCAN] Tracks: ${domScan.tracks.length}, HTML matches: ${domScan.htmlSubs.length}, Sources: ${domScan.sources.length}, Player candidates: ${domScan.playerCandidates.length}`);
+
     domScan.tracks.forEach(t => { 
       if (t.src) registerSub(t.src, { label: t.label, lang: t.srclang, source: "dom-track" }); 
     });
@@ -202,6 +211,7 @@ async function extractStreamAndSubs(url, opts = {}) {
       });
     }
 
+    // Try clicking play buttons
     const playSelectors = [
       'button[aria-label*="play"]', 
       '.vjs-play-control', 
@@ -216,6 +226,7 @@ async function extractStreamAndSubs(url, opts = {}) {
       try {
         const exists = await page.$(sel);
         if (exists) {
+          console.log(`[CLICKING] ${sel}`);
           await Promise.all([
             page.click(sel).catch(() => {}), 
             sleep(300)
@@ -226,10 +237,15 @@ async function extractStreamAndSubs(url, opts = {}) {
 
     try {
       const videoHandle = await page.$('video');
-      if (videoHandle) await videoHandle.click().catch(() => {});
+      if (videoHandle) {
+        console.log('[CLICKING] video element');
+        await videoHandle.click().catch(() => {});
+      }
     } catch(e) {}
 
+    console.log('[WAITING] Monitoring for streams...');
     const start = Date.now();
+    let lastLog = start;
     while ((Date.now() - start) < timeoutMs) {
       try {
         const perfEntries = await page.evaluate(() => 
@@ -239,6 +255,12 @@ async function extractStreamAndSubs(url, opts = {}) {
           if (n.match(/\.m3u8(\?|$)/i)) registerStream(n);
           if (n.match(/\.(?:vtt|srt|ttml|dfxp)(?:\?|$)/i)) registerSub(n, { source: "performance" });
         });
+        
+        // Log progress every 5 seconds
+        if (Date.now() - lastLog > 5000) {
+          console.log(`[PROGRESS] Elapsed: ${Math.floor((Date.now() - start)/1000)}s, Streams: ${streamSet.size}, Subs: ${subsMap.size}`);
+          lastLog = Date.now();
+        }
       } catch(e) {}
       if (foundStream && subsMap.size) break;
       await sleep(800);
@@ -252,13 +274,15 @@ async function extractStreamAndSubs(url, opts = {}) {
       source: s.source || null 
     }));
 
+    console.log(`[FINAL RESULT] Stream: ${finalStream ? 'YES' : 'NO'}, Subtitles: ${subtitles.length}`);
+
     return { stream: finalStream, subtitles };
 
   } catch (err) {
-    console.error('Extraction error:', err.message);
+    console.error('[EXTRACTION ERROR]', err.message);
+    console.error('[STACK]', err.stack);
     throw err;
   } finally {
-    // CRITICAL: Always close browser and page
     try {
       if (page) await page.close();
     } catch (e) {
