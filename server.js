@@ -54,7 +54,11 @@ async function extractStreamAndSubs(url, opts = {}) {
         "--disable-accelerated-2d-canvas",
         "--no-first-run",
         "--no-zygote",
-        "--disable-gpu"
+        "--disable-gpu",
+        // ADD THESE FOR BETTER STEALTH
+        "--disable-web-security",
+        "--disable-features=IsolateOrigins,site-per-process",
+        "--window-size=1920,1080"
       ]
     });
 
@@ -64,24 +68,71 @@ async function extractStreamAndSubs(url, opts = {}) {
     page.setDefaultTimeout(30000);
     page.setDefaultNavigationTimeout(60000);
 
-    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+    // MORE REALISTIC USER AGENT
+    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
+    
+    // ADD MORE HEADERS
     await page.setExtraHTTPHeaders({ 
+      "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
       "accept-language": "en-US,en;q=0.9", 
-      "referer": url 
+      "accept-encoding": "gzip, deflate, br",
+      "referer": "https://vidsrc.cc/",
+      "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+      "sec-ch-ua-mobile": "?0",
+      "sec-ch-ua-platform": '"Windows"',
+      "sec-fetch-dest": "document",
+      "sec-fetch-mode": "navigate",
+      "sec-fetch-site": "same-origin",
+      "upgrade-insecure-requests": "1"
     });
-    await page.setViewport({ width: 1280, height: 800 });
+    
+    await page.setViewport({ width: 1920, height: 1080 });
 
+    // ENHANCED STEALTH
     await page.evaluateOnNewDocument(() => {
+      // Overwrite the `navigator.webdriver` property
       Object.defineProperty(navigator, 'webdriver', { get: () => false });
+      
+      // Mock languages
       Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-      Object.defineProperty(navigator, 'plugins', { get: () => [1,2,3] });
+      
+      // Mock plugins
+      Object.defineProperty(navigator, 'plugins', { 
+        get: () => [
+          { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+          { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+          { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' }
+        ] 
+      });
+
+      // Mock permissions
+      const originalQuery = window.navigator.permissions.query;
+      window.navigator.permissions.query = (parameters) => (
+        parameters.name === 'notifications' ?
+          Promise.resolve({ state: Notification.permission }) :
+          originalQuery(parameters)
+      );
+
+      // Hide automation
+      delete navigator.__proto__.webdriver;
+      
+      // Mock chrome object
+      window.chrome = {
+        runtime: {},
+        loadTimes: function() {},
+        csi: function() {},
+        app: {}
+      };
+
+      // Remove Puppeteer traces
+      const newProto = navigator.__proto__;
+      delete newProto.webdriver;
+      navigator.__proto__ = newProto;
     });
 
     let foundStream = null;
     const streamSet = new Set();
     const subsMap = new Map();
-    
-    // ADD LOGGING
     let responseCount = 0;
     let requestCount = 0;
 
@@ -152,21 +203,45 @@ async function extractStreamAndSubs(url, opts = {}) {
 
     console.log(`[NAVIGATING] ${url}`);
     await page.goto(url, { 
-      waitUntil: "networkidle2", 
+      waitUntil: "domcontentloaded", // Changed from networkidle2
       timeout: 60000 
-    }).catch(async (err) => {
-      console.log('[RETRY] Navigation failed, trying domcontentloaded...');
-      await page.goto(url, { 
-        waitUntil: "domcontentloaded", 
-        timeout: 60000 
-      });
     });
+
+    // WAIT FOR PAGE TO FULLY LOAD
+    await sleep(3000);
 
     console.log(`[NAVIGATION COMPLETE] Responses: ${responseCount}, Requests: ${requestCount}`);
 
+    // TAKE SCREENSHOT FOR DEBUGGING
+    try {
+      const screenshot = await page.screenshot({ encoding: 'base64', fullPage: false });
+      console.log('[SCREENSHOT] Page screenshot (base64):', screenshot.substring(0, 100) + '...');
+      // You can decode this base64 to see what the page looks like
+    } catch (e) {
+      console.error('[SCREENSHOT ERROR]', e.message);
+    }
+
+    // GET PAGE CONTENT FOR DEBUGGING
+    const pageContent = await page.content();
+    console.log('[PAGE CONTENT LENGTH]', pageContent.length);
+    console.log('[PAGE CONTENT SAMPLE]', pageContent.substring(0, 500));
+
     const domScan = await page.evaluate(() => {
-      const results = { tracks: [], htmlSubs: [], sources: [], playerCandidates: [] };
+      const results = { 
+        tracks: [], 
+        htmlSubs: [], 
+        sources: [], 
+        playerCandidates: [],
+        iframes: [],
+        bodyText: document.body ? document.body.innerText.substring(0, 500) : '',
+        title: document.title
+      };
+      
       try {
+        // Check for iframes
+        const iframeEls = Array.from(document.querySelectorAll('iframe'));
+        results.iframes = iframeEls.map(f => ({ src: f.src, id: f.id, className: f.className }));
+        
         const trackEls = Array.from(document.querySelectorAll('track[kind="subtitles"], track[kind="captions"], track'));
         trackEls.forEach(t => results.tracks.push({ 
           src: t.src, 
@@ -174,10 +249,13 @@ async function extractStreamAndSubs(url, opts = {}) {
           label: t.label || null, 
           kind: t.kind || null 
         }));
+        
         const srcMatches = (document.documentElement.innerHTML || '').match(/https?:\/\/[^"'\\\s]+?\.(?:vtt|srt|ttml|dfxp|m3u8)[^"'\\\s]*/ig) || [];
         results.htmlSubs = srcMatches.slice(0, 200);
+        
         const videoSources = Array.from(document.querySelectorAll('video source')).map(s => s.src).filter(Boolean);
         results.sources = videoSources;
+        
         const playerCandidates = [];
         try {
           for (const k of Object.keys(window)) {
@@ -189,11 +267,16 @@ async function extractStreamAndSubs(url, opts = {}) {
           }
         } catch(e) {}
         results.playerCandidates = playerCandidates.slice(0, 20);
-      } catch(e) {}
+      } catch(e) {
+        results.error = e.message;
+      }
       return results;
     });
 
-    console.log(`[DOM SCAN] Tracks: ${domScan.tracks.length}, HTML matches: ${domScan.htmlSubs.length}, Sources: ${domScan.sources.length}, Player candidates: ${domScan.playerCandidates.length}`);
+    console.log(`[DOM SCAN] Tracks: ${domScan.tracks.length}, HTML matches: ${domScan.htmlSubs.length}, Sources: ${domScan.sources.length}, Player candidates: ${domScan.playerCandidates.length}, iframes: ${domScan.iframes.length}`);
+    console.log(`[PAGE TITLE] ${domScan.title}`);
+    console.log(`[BODY TEXT] ${domScan.bodyText}`);
+    console.log(`[IFRAMES]`, JSON.stringify(domScan.iframes));
 
     domScan.tracks.forEach(t => { 
       if (t.src) registerSub(t.src, { label: t.label, lang: t.srclang, source: "dom-track" }); 
@@ -211,7 +294,6 @@ async function extractStreamAndSubs(url, opts = {}) {
       });
     }
 
-    // Try clicking play buttons
     const playSelectors = [
       'button[aria-label*="play"]', 
       '.vjs-play-control', 
@@ -256,7 +338,6 @@ async function extractStreamAndSubs(url, opts = {}) {
           if (n.match(/\.(?:vtt|srt|ttml|dfxp)(?:\?|$)/i)) registerSub(n, { source: "performance" });
         });
         
-        // Log progress every 5 seconds
         if (Date.now() - lastLog > 5000) {
           console.log(`[PROGRESS] Elapsed: ${Math.floor((Date.now() - start)/1000)}s, Streams: ${streamSet.size}, Subs: ${subsMap.size}`);
           lastLog = Date.now();
