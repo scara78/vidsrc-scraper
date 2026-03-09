@@ -1,116 +1,94 @@
 import express from "express";
+import axios from "axios";
 import cors from "cors";
-import { chromium } from "playwright";
+import * as cheerio from "cheerio";
 
 const app = express();
 app.use(cors());
 
 const PORT = process.env.PORT || 9000;
 
-async function extractStream(url) {
+async function getServers(id) {
 
-  const browser = await chromium.launch({
-    headless: true,
-    args: ["--no-sandbox"]
-  });
+  const url = `https://vidsrc.cc/v2/embed/movie/${id}`;
 
-  const page = await browser.newPage();
+  const html = (await axios.get(url)).data;
 
-  let stream = null;
-  let subtitles = [];
+  const $ = cheerio.load(html);
 
-  page.on("response", async (response) => {
+  let servers = [];
 
-    const r = response.url();
+  $("a").each((i, el) => {
 
-    if (r.includes(".m3u8")) {
-      stream = r;
-    }
+    const link = $(el).attr("data-link");
 
-    if (r.includes(".vtt") || r.includes(".srt")) {
-      subtitles.push(r);
-    }
+    if (link) servers.push(link);
 
   });
 
-  await page.goto(url, { waitUntil: "domcontentloaded" });
+  return servers;
 
-  await page.waitForTimeout(5000);
+}
 
-  try {
+async function findM3U8(url) {
 
-    const servers = await page.$$(".server, .server-item, button");
-
-    if (servers.length) {
-      await servers[0].click();
+  const page = (await axios.get(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0",
+      "Referer": "https://vidsrc.cc/"
     }
+  })).data;
 
-  } catch {}
+  const m = page.match(/https?:\/\/.*?\.m3u8/g);
 
-  for (let i = 0; i < 15; i++) {
+  if (m) return m[0];
 
-    if (stream) break;
-
-    await page.waitForTimeout(1000);
-
-  }
-
-  await browser.close();
-
-  return { stream, subtitles };
+  return null;
 
 }
 
 app.get("/movie/:id", async (req, res) => {
 
-  const id = req.params.id;
+  try {
 
-  const url = `https://vidsrc.cc/v2/embed/movie/${id}`;
+    const id = req.params.id;
 
-  const result = await extractStream(url);
+    const servers = await getServers(id);
 
-  res.json(result);
+    if (!servers.length) {
+      return res.json({ error: "no servers" });
+    }
 
-});
+    for (let s of servers) {
 
-app.get("/tv/:id/:season/:episode", async (req, res) => {
+      const stream = await findM3U8(s);
 
-  const { id, season, episode } = req.params;
+      if (stream) {
 
-  const url = `https://vidsrc.cc/v2/embed/tv/${id}/${season}/${episode}`;
+        return res.json({
+          stream: stream
+        });
 
-  const result = await extractStream(url);
+      }
 
-  res.json(result);
+    }
 
-});
+    res.json({ error: "stream not found" });
 
-app.get("/proxy", async (req, res) => {
+  } catch (e) {
 
-  const url = req.query.url;
+    res.json({
+      error: e.message
+    });
 
-  if (!url) {
-    return res.status(400).send("missing url");
   }
 
-  const response = await fetch(url, {
-    headers: {
-      "User-Agent": "Mozilla/5.0",
-      "Referer": "https://vidsrc.cc/"
-    }
-  });
-
-  const body = await response.text();
-
-  res.set("content-type", "application/vnd.apple.mpegurl");
-  res.send(body);
-
 });
 
-app.get("/health", (req, res) => {
-  res.json({ status: "ok" });
-});
+app.get("/health", (req,res)=>res.send("ok"));
 
-app.listen(PORT, () => {
-  console.log("API running on port", PORT);
+app.listen(PORT, ()=>{
+
+  console.log("API running on port",PORT);
+
 });
