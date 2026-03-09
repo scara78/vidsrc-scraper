@@ -7,29 +7,28 @@ app.use(cors());
 
 const PORT = process.env.PORT || 9000;
 
-/* ===============================
-   PROVIDER MODULES
-=================================*/
+/* -------------------------
+   PROVIDER: SUPEREMBED
+--------------------------*/
 
-async function vidsrcMovie(imdb) {
+async function superembedMovie(imdb) {
 
   try {
 
-    const embed = `https://vidsrc.cc/v2/embed/movie/${imdb}`;
+    const url = `https://multiembed.mov/?video_id=${imdb}&tmdb=1`;
 
-    const r = await axios.get(embed,{
+    const r = await axios.get(url,{
       headers:{
-        "User-Agent":"Mozilla/5.0",
-        "Referer":"https://vidsrc.cc/"
+        "User-Agent":"Mozilla/5.0"
       }
     });
 
     const match = r.data.match(/https?:\/\/[^"]+\.m3u8/g);
 
-    if(match) {
+    if(match){
       return {
-        source: "vidsrc",
-        stream: match[0]
+        provider:"superembed",
+        stream:match[0]
       };
     }
 
@@ -39,13 +38,17 @@ async function vidsrcMovie(imdb) {
 
 }
 
-async function vidsrcTv(imdb,season,episode){
+/* -------------------------
+   PROVIDER: VIDSRC
+--------------------------*/
+
+async function vidsrcMovie(imdb){
 
   try{
 
-    const embed=`https://vidsrc.cc/v2/embed/tv/${imdb}/${season}/${episode}`;
+    const url=`https://vidsrc.cc/v2/embed/movie/${imdb}`;
 
-    const r=await axios.get(embed,{
+    const r=await axios.get(url,{
       headers:{
         "User-Agent":"Mozilla/5.0",
         "Referer":"https://vidsrc.cc/"
@@ -56,7 +59,7 @@ async function vidsrcTv(imdb,season,episode){
 
     if(match){
       return {
-        source:"vidsrc",
+        provider:"vidsrc",
         stream:match[0]
       };
     }
@@ -67,51 +70,40 @@ async function vidsrcTv(imdb,season,episode){
 
 }
 
-/* ===============================
-   STREAM API
-=================================*/
+/* -------------------------
+   MAIN STREAM API
+--------------------------*/
 
 app.get("/stream/movie/:imdb", async (req,res)=>{
 
   const imdb=req.params.imdb;
 
-  const sources=[];
+  const providers=[
+    superembedMovie,
+    vidsrcMovie
+  ];
 
-  const vidsrc=await vidsrcMovie(imdb);
+  for(const provider of providers){
 
-  if(vidsrc) sources.push(vidsrc);
+    const result=await provider(imdb);
 
-  if(!sources.length){
-    return res.json({
-      streams:[]
-    });
+    if(result){
+      return res.json({
+        streams:[result]
+      });
+    }
+
   }
 
   res.json({
-    streams:sources
+    streams:[]
   });
 
 });
 
-app.get("/stream/tv/:imdb/:season/:episode", async (req,res)=>{
-
-  const {imdb,season,episode}=req.params;
-
-  const sources=[];
-
-  const vidsrc=await vidsrcTv(imdb,season,episode);
-
-  if(vidsrc) sources.push(vidsrc);
-
-  res.json({
-    streams:sources
-  });
-
-});
-
-/* ===============================
-   PROXY
-=================================*/
+/* -------------------------
+   PROXY STREAM
+--------------------------*/
 
 app.get("/proxy", async (req,res)=>{
 
@@ -121,8 +113,7 @@ app.get("/proxy", async (req,res)=>{
 
   const r=await axios.get(url,{
     headers:{
-      "User-Agent":"Mozilla/5.0",
-      "Referer":"https://vidsrc.cc/"
+      "User-Agent":"Mozilla/5.0"
     }
   });
 
@@ -131,18 +122,14 @@ app.get("/proxy", async (req,res)=>{
 
 });
 
-/* ===============================
+/* -------------------------
    HEALTH
-=================================*/
+--------------------------*/
 
 app.get("/health",(req,res)=>{
-
   res.json({status:"ok"});
-
 });
 
 app.listen(PORT,()=>{
-
-  console.log("Stream API running on port",PORT);
-
+  console.log("Universal Stream API running on port",PORT);
 });
