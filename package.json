@@ -1,9 +1,10 @@
 {
-  "name": "vidsrc-api",
-  "type": "module",
-  "dependencies": {
-    "cors": "^2.8.5",
-    "express": "^4.19.2",
-    "playwright": "^1.43.0"
-  }
+ "name": "vidsrc-api",
+ "type": "module",
+ "dependencies": {
+  "axios": "^1.6.0",
+  "cors": "^2.8.5",
+  "express": "^4.19.2",
+  "cheerio": "^1.0.0"
+ }
 }
