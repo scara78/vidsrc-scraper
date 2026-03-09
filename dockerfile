@@ -1,13 +1,12 @@
-FROM ghcr.io/puppeteer/puppeteer:24.32.1
+FROM node:20
 
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-
-
-WORKDIR /usr/src/app
-
-COPY package.json package-lock.json ./
-RUN npm ci
+WORKDIR /app
 
 COPY . .
 
-CMD ["node", "server.js"]
+RUN npm install
+RUN npx playwright install chromium
+
+EXPOSE 9000
+
+CMD ["node","server.js"]
